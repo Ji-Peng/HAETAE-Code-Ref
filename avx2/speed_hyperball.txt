@@ -1,0 +1,117 @@
+HAETAE2 avx2 — 球采样组件级 speed test
+N=256, K=2, L=4
+
+sample_gauss16:
+median: 26 cycles/ticks
+average: 27 cycles/ticks
+
+approx_exp:
+median: 26 cycles/ticks
+average: 32 cycles/ticks
+
+fixpoint_square:
+median: 26 cycles/ticks
+average: 24 cycles/ticks
+
+fixpoint_newton_invsqrt:
+median: 269 cycles/ticks
+average: 287 cycles/ticks
+
+fixpoint_mul_rnd13:
+median: 26 cycles/ticks
+average: 24 cycles/ticks
+
+sample_gauss_N (N+1):
+median: 48194 cycles/ticks
+average: 48261 cycles/ticks
+
+sample_gauss_N_4x (4×N):
+median: 76733 cycles/ticks
+average: 77196 cycles/ticks
+
+polyfixveclk_sqnorm2:
+median: 215 cycles/ticks
+average: 229 cycles/ticks
+
+polyfixveclk_sample_hyperball:
+median: 157706 cycles/ticks
+average: 158828 cycles/ticks
+
+HAETAE3 avx2 — 球采样组件级 speed test
+N=256, K=3, L=6
+
+sample_gauss16:
+median: 26 cycles/ticks
+average: 26 cycles/ticks
+
+approx_exp:
+median: 26 cycles/ticks
+average: 32 cycles/ticks
+
+fixpoint_square:
+median: 26 cycles/ticks
+average: 24 cycles/ticks
+
+fixpoint_newton_invsqrt:
+median: 269 cycles/ticks
+average: 282 cycles/ticks
+
+fixpoint_mul_rnd13:
+median: 26 cycles/ticks
+average: 24 cycles/ticks
+
+sample_gauss_N (N+1):
+median: 48113 cycles/ticks
+average: 48074 cycles/ticks
+
+sample_gauss_N_4x (4×N):
+median: 76679 cycles/ticks
+average: 77153 cycles/ticks
+
+polyfixveclk_sqnorm2:
+median: 404 cycles/ticks
+average: 393 cycles/ticks
+
+polyfixveclk_sample_hyperball:
+median: 206819 cycles/ticks
+average: 208212 cycles/ticks
+
+HAETAE5 avx2 — 球采样组件级 speed test
+N=256, K=4, L=7
+
+sample_gauss16:
+median: 26 cycles/ticks
+average: 26 cycles/ticks
+
+approx_exp:
+median: 26 cycles/ticks
+average: 32 cycles/ticks
+
+fixpoint_square:
+median: 26 cycles/ticks
+average: 24 cycles/ticks
+
+fixpoint_newton_invsqrt:
+median: 269 cycles/ticks
+average: 283 cycles/ticks
+
+fixpoint_mul_rnd13:
+median: 26 cycles/ticks
+average: 24 cycles/ticks
+
+sample_gauss_N (N+1):
+median: 48788 cycles/ticks
+average: 50738 cycles/ticks
+
+sample_gauss_N_4x (4×N):
+median: 76814 cycles/ticks
+average: 77738 cycles/ticks
+
+polyfixveclk_sqnorm2:
+median: 458 cycles/ticks
+average: 455 cycles/ticks
+
+polyfixveclk_sample_hyperball:
+median: 236627 cycles/ticks
+average: 238700 cycles/ticks
+

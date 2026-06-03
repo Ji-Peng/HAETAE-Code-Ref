@@ -1,0 +1,4 @@
+out/
+samples.txt
+*.prof
+*.out

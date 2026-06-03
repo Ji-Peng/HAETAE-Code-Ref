@@ -1,0 +1,26 @@
+File: test_gperf5
+Type: cpu
+Showing nodes accounting for 14.39s, 97.43% of 14.77s total
+Dropped 28 nodes (cum <= 0.07s)
+      flat  flat%   sum%        cum   cum%
+     9.32s 63.10% 63.10%      9.32s 63.10%  smulh48_avx
+     2.82s 19.09% 82.19%     14.77s   100%  [test_gperf5]
+        1s  6.77% 88.96%     10.32s 69.87%  approx_exp_4x
+     0.42s  2.84% 91.81%      0.42s  2.84%  sample_gauss16_x4
+     0.20s  1.35% 93.16%      0.20s  1.35%  __KeccakF1600
+     0.14s  0.95% 94.11%      0.14s  0.95%  sample_candidates_x4
+     0.12s  0.81% 94.92%      0.12s  0.81%  RansEncPutSymbol
+     0.09s  0.61% 95.53%      0.09s  0.61%  __mr13
+     0.09s  0.61% 96.14%      0.18s  1.22%  _mul_rnd13
+     0.09s  0.61% 96.75%      0.09s  0.61%  move_to_mem_4x
+     0.05s  0.34% 97.09%      0.10s  0.68%  rej_msk_4x
+     0.03s   0.2% 97.29%     13.55s 91.74%  sample_gauss_N_4x
+     0.01s 0.068% 97.36%     14.65s 99.19%  [libc.so.6]
+     0.01s 0.068% 97.43%     14.65s 99.19%  crypto_sign_signature
+         0     0% 97.43%     14.65s 99.19%  crypto_sign
+         0     0% 97.43%      0.18s  1.22%  cryptolab_haetae5_haetae_shake256_absorb_twice
+         0     0% 97.43%      0.10s  0.68%  encode_hb_z1
+         0     0% 97.43%     14.65s 99.19%  gperf_sign
+         0     0% 97.43%      0.15s  1.02%  pack_sig
+         0     0% 97.43%      0.17s  1.15%  poly_challenge
+         0     0% 97.43%     13.76s 93.16%  polyfixveclk_sample_hyperball

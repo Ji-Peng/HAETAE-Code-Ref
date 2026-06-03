@@ -1,0 +1,7 @@
+out/
+collect_signatures
+collect_signatures_180
+collect_signatures_180_new
+collect_signatures_260
+*.prof
+*.out

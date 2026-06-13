@@ -24,6 +24,7 @@ SRCS_GPERF_HB = test/gperf_hyperball.c
 SRCS_COLLECT = test/collect_signatures.c
 SRCS_COLLECT_PUBLIC = test/collect_public_view.c
 SRCS_COLLECT_HINT = test/collect_hint_view.c
+SRCS_COLLECT_HINT_PK = test/collect_hint_pk_view.c
 COMMON_OBJS_SPEED_2 = $(addprefix out/common_, $(COMMON_SRCS:.c=_sp_2.o))
 COMMON_OBJS_SPEED_3 = $(addprefix out/common_, $(COMMON_SRCS:.c=_sp_3.o))
 COMMON_OBJS_SPEED_5 = $(addprefix out/common_, $(COMMON_SRCS:.c=_sp_5.o))
@@ -52,8 +53,11 @@ OBJS_COLLECT_PUBLIC_5 = $(addprefix out/, $(SOURCES:.c=_sp_5.o)) $(COMMON_OBJS_S
 OBJS_COLLECT_HINT_2 = $(addprefix out/, $(SOURCES:.c=_sp_2.o)) $(COMMON_OBJS_SPEED_2) $(addprefix out/, $(SRCS_COLLECT_HINT:.c=_sp_2.o))
 OBJS_COLLECT_HINT_3 = $(addprefix out/, $(SOURCES:.c=_sp_3.o)) $(COMMON_OBJS_SPEED_3) $(addprefix out/, $(SRCS_COLLECT_HINT:.c=_sp_3.o))
 OBJS_COLLECT_HINT_5 = $(addprefix out/, $(SOURCES:.c=_sp_5.o)) $(COMMON_OBJS_SPEED_5) $(addprefix out/, $(SRCS_COLLECT_HINT:.c=_sp_5.o))
+OBJS_COLLECT_HINT_PK_2 = $(addprefix out/, $(SOURCES:.c=_sp_2.o)) $(COMMON_OBJS_SPEED_2) $(addprefix out/, $(SRCS_COLLECT_HINT_PK:.c=_sp_2.o))
+OBJS_COLLECT_HINT_PK_3 = $(addprefix out/, $(SOURCES:.c=_sp_3.o)) $(COMMON_OBJS_SPEED_3) $(addprefix out/, $(SRCS_COLLECT_HINT_PK:.c=_sp_3.o))
+OBJS_COLLECT_HINT_PK_5 = $(addprefix out/, $(SOURCES:.c=_sp_5.o)) $(COMMON_OBJS_SPEED_5) $(addprefix out/, $(SRCS_COLLECT_HINT_PK:.c=_sp_5.o))
 
-.PHONY: all run_speed run_speed_hyperball clean collect collect_public collect_hint
+.PHONY: all run_speed run_speed_hyperball clean collect collect_public collect_hint collect_hint_pk
 
 all: out/test_speed2 out/test_speed3 out/test_speed5
 
@@ -66,6 +70,8 @@ collect: out/collect2 out/collect3 out/collect5
 collect_public: out/collect_public2 out/collect_public3 out/collect_public5
 
 collect_hint: out/collect_hint2 out/collect_hint3 out/collect_hint5
+
+collect_hint_pk: out/collect_hint_pk2 out/collect_hint_pk3 out/collect_hint_pk5
 
 run_speed: all
 	./out/test_speed2 > speed.txt
@@ -133,6 +139,15 @@ out/collect_hint3: $(OBJS_COLLECT_HINT_3) | out
 	$(LD) $(LDFLAGS) $^ -o $@ -lm
 
 out/collect_hint5: $(OBJS_COLLECT_HINT_5) | out
+	$(LD) $(LDFLAGS) $^ -o $@ -lm
+
+out/collect_hint_pk2: $(OBJS_COLLECT_HINT_PK_2) | out
+	$(LD) $(LDFLAGS) $^ -o $@ -lm
+
+out/collect_hint_pk3: $(OBJS_COLLECT_HINT_PK_3) | out
+	$(LD) $(LDFLAGS) $^ -o $@ -lm
+
+out/collect_hint_pk5: $(OBJS_COLLECT_HINT_PK_5) | out
 	$(LD) $(LDFLAGS) $^ -o $@ -lm
 
 out/%_sp_2.o: %.c | out

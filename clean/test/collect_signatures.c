@@ -7,13 +7,15 @@
  * Binary output format:
  *   Header: N(u32) K(u32) L(u32) M(u32) LN(u32) num_sigs(u32)
  *   Secret keys: M polynomials s1 (each N×i32), K polynomials s2 (each N×i32)
- *   For each signature:
- *     L polynomials z1 (each N×i32, fixed-point scaled by LN)
- *     K polynomials z2 (each N×i32, fixed-point scaled by LN)
+ *   For each signature (this build also exports the mask y for analysis):
+ *     L polynomials y1, K polynomials y2  (mask, each N×i32, polyfix LN-scaled)
+ *     L polynomials z1, K polynomials z2  (response, each N×i32, polyfix LN-scaled)
  *     1 challenge polynomial c (N×i32)
- *     1 byte b (bimodal bit)
+ *     1 byte b (bimodal bits; b&1 = sign, (b>>1)&1 = b')
  *
  * Usage: ./collect_signatures <num_sigs> <output_file>
+ *        output_file "-" streams the binary to stdout (logs go to stderr),
+ *        so millions of signatures can be piped without a multi-GB disk file.
  */
 
 #include <stdio.h>
@@ -39,6 +41,7 @@
  */
 static int sign_and_collect(
     polyfixvecl *out_z1, polyfixveck *out_z2, poly *out_c, uint8_t *out_b,
+    polyfixvecl *out_y1, polyfixveck *out_y2,
     const uint8_t *m, size_t mlen, const uint8_t *sk)
 {
     uint8_t buf[POLYVECK_HIGHBITS_PACKEDBYTES + POLYC_PACKEDBYTES] = {0};
@@ -125,9 +128,11 @@ reject:
         goto reject;
     }
 
-    /* Output internal state */
+    /* Output internal state (mask y AND response z, both polyfix LN-scaled) */
     *out_z1 = z1;
     *out_z2 = z2;
+    *out_y1 = y1;
+    *out_y2 = y2;
     *out_c = c;
     *out_b = b;
 
@@ -143,9 +148,9 @@ int main(int argc, char *argv[]) {
     uint32_t num_sigs = (uint32_t)atoi(argv[1]);
     const char *outfile = argv[2];
 
-    printf("HAETAE-%d signature collection\n", HAETAE_MODE);
-    printf("  N=%d, K=%d, L=%d, M=%d, LN=%d\n", N, K, L, M, LN);
-    printf("  Collecting %u signatures...\n", num_sigs);
+    fprintf(stderr, "HAETAE-%d signature collection\n", HAETAE_MODE);
+    fprintf(stderr, "  N=%d, K=%d, L=%d, M=%d, LN=%d\n", N, K, L, M, LN);
+    fprintf(stderr, "  Collecting %u signatures...\n", num_sigs);
 
     /* Generate keypair */
     uint8_t pk[HAETAE_CRYPTO_PUBLICKEYBYTES];
@@ -160,7 +165,10 @@ int main(int argc, char *argv[]) {
     unpack_sk(A1_dummy, &s1, &s2, key_dummy, sk);
 
     /* Open output file */
-    FILE *fp = fopen(outfile, "wb");
+    /* outfile "-" streams the binary to stdout (for piping into the analyzer
+     * without ever creating a multi-GB disk file). All human-readable logs go
+     * to stderr in that case so stdout stays a pure binary stream. */
+    FILE *fp = (strcmp(outfile, "-") == 0) ? stdout : fopen(outfile, "wb");
     if (!fp) {
         fprintf(stderr, "Cannot open %s for writing\n", outfile);
         return 1;
@@ -178,9 +186,17 @@ int main(int argc, char *argv[]) {
         fwrite(s2.vec[i].coeffs, sizeof(int32_t), N, fp);
     }
 
-    /* Collect signatures */
-    polyfixvecl z1;
-    polyfixveck z2;
+    /* Collect signatures.
+     * Per-signature record layout (this build, rejection-bias experiment):
+     *   y1: L polynomials (N i32, polyfix LN-scaled mask)
+     *   y2: K polynomials (N i32)
+     *   z1: L polynomials (N i32, polyfix LN-scaled response)
+     *   z2: K polynomials (N i32)
+     *   c : N i32 challenge
+     *   b : 1 byte bimodal bits
+     */
+    polyfixvecl z1, y1;
+    polyfixveck z2, y2;
     poly c;
     uint8_t b;
     uint8_t msg[32];
@@ -191,8 +207,16 @@ int main(int argc, char *argv[]) {
         memcpy(msg, &t, sizeof(t));
         memset(msg + sizeof(t), 0, sizeof(msg) - sizeof(t));
 
-        sign_and_collect(&z1, &z2, &c, &b, msg, sizeof(msg), sk);
+        sign_and_collect(&z1, &z2, &c, &b, &y1, &y2, msg, sizeof(msg), sk);
 
+        /* Write y1 (L polynomials, fixed-point mask) */
+        for (unsigned int i = 0; i < L; i++) {
+            fwrite(y1.vec[i].coeffs, sizeof(int32_t), N, fp);
+        }
+        /* Write y2 (K polynomials, fixed-point mask) */
+        for (unsigned int i = 0; i < K; i++) {
+            fwrite(y2.vec[i].coeffs, sizeof(int32_t), N, fp);
+        }
         /* Write z1 (L polynomials, fixed-point) */
         for (unsigned int i = 0; i < L; i++) {
             fwrite(z1.vec[i].coeffs, sizeof(int32_t), N, fp);
@@ -210,17 +234,17 @@ int main(int argc, char *argv[]) {
             double elapsed = (double)(clock() - start) / CLOCKS_PER_SEC;
             double rate = (t + 1) / elapsed;
             double eta = (num_sigs - t - 1) / rate;
-            printf("  [%u/%u] %.0f sigs/sec, ETA: %.0fs\n",
+            fprintf(stderr, "  [%u/%u] %.0f sigs/sec, ETA: %.0fs\n",
                    t + 1, num_sigs, rate, eta);
         }
     }
 
-    fclose(fp);
+    if (fp != stdout) fclose(fp); else fflush(fp);
 
     double total_time = (double)(clock() - start) / CLOCKS_PER_SEC;
-    printf("Done! %u signatures in %.1fs (%.0f sigs/sec)\n",
+    fprintf(stderr, "Done! %u signatures in %.1fs (%.0f sigs/sec)\n",
            num_sigs, total_time, num_sigs / total_time);
-    printf("Output: %s\n", outfile);
+    fprintf(stderr, "Output: %s\n", outfile);
 
     return 0;
 }

@@ -189,6 +189,13 @@ static int sample_gauss_sigma76(uint64_t *r, fp96_76 *sqr,
      */
     x = sample_gauss16(rand_gauss16);
 
+#ifdef TRUNC_CAP_X
+    /* FACTORS EXPERIMENT ONLY: exaggerated tail truncation.  x in [0..64] maps to
+     * ~x/16 sigma; reject candidates with x > TRUNC_CAP_X to cap the tail (e.g.
+     * TRUNC_CAP_X=32 -> ~2 sigma).  Guarded so the baseline build is unchanged. */
+    if (x > (uint64_t)TRUNC_CAP_X) return 0;
+#endif
+
     /*
      * 2) Build a 79-bit candidate y = yrand + (x << 72)
      *

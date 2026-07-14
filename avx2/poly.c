@@ -278,8 +278,20 @@ void poly_highbits(poly *a2, const poly *a) {
     for (i = 0; i < N/8; ++i)
     {
       //decompose_z1(&a2->coeffs[i], &a1tmp, a->coeffs[i]);
+#ifdef SYM_DECOMPOSE_Z1
+      /* factors isolation: symmetrize the half-open decompose_z1 tie-break.
+       * reference rounds the exact half (r==128 mod 256) UP (sign-asymmetric
+       * under R: z->-z); route ties to EVEN highbits instead. Reconstruction
+       * stays exact since poly_lowbits recomputes lb from the same hb. */
+      __m256i hb  = _mm256_srai_epi32(_mm256_add_epi32(a->vec[i], decomp_data_avx.vec[1]), 8);
+      __m256i lbr = _mm256_and_si256(a->vec[i], decomp_data_avx.vec[0]);   // r & 255
+      __m256i tie = _mm256_cmpeq_epi32(lbr, decomp_data_avx.vec[1]);       // (r&255)==128
+      __m256i odd = _mm256_and_si256(hb, decomp_data_avx.vec[2]);          // hb & 1
+      a2->vec[i] = _mm256_sub_epi32(hb, _mm256_and_si256(tie, odd));       // ties -> even
+#else
       a2->vec[i] = _mm256_add_epi32(a->vec[i], decomp_data_avx.vec[1]);
       a2->vec[i] = _mm256_srai_epi32(a2->vec[i], 8); // TODO magic number!
+#endif
     }
 }
 
@@ -297,12 +309,22 @@ void poly_lowbits(poly *a1, const poly *a) {
 
     for (i = 0; i < N/8; ++i)
     {
+#ifdef SYM_DECOMPOSE_Z1
+      /* consistent with the tie-to-even poly_highbits above: lb = r - hb_sym*256 */
+      __m256i hb  = _mm256_srai_epi32(_mm256_add_epi32(a->vec[i], decomp_data_avx.vec[1]), 8);
+      __m256i lbr = _mm256_and_si256(a->vec[i], decomp_data_avx.vec[0]);
+      __m256i tie = _mm256_cmpeq_epi32(lbr, decomp_data_avx.vec[1]);
+      __m256i odd = _mm256_and_si256(hb, decomp_data_avx.vec[2]);
+      __m256i hbs = _mm256_sub_epi32(hb, _mm256_and_si256(tie, odd));
+      a1->vec[i] = _mm256_sub_epi32(a->vec[i], _mm256_slli_epi32(hbs, 8));
+#else
       lb = _mm256_and_si256(a->vec[i], decomp_data_avx.vec[0]);
       center = _mm256_add_epi32(lb, decomp_data_avx.vec[2]); // lb+1
       center = _mm256_sub_epi32(decomp_data_avx.vec[1], center); // (alpha >> 1) - (lb + 1)
       center = _mm256_srai_epi32(center, 31);
       center = _mm256_and_si256(center, decomp_data_avx.vec[3]);
       a1->vec[i] = _mm256_sub_epi32(lb, center);
+#endif
     }
 }
 

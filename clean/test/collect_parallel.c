@@ -32,6 +32,7 @@
 
 #include "packing.h"
 #include "params.h"
+#include "encoding.h"
 #include "poly.h"
 #include "polyfix.h"
 #include "polymat.h"
@@ -41,6 +42,11 @@
 #include "symmetric.h"
 
 #define HINT_PK_VIEW_MAGIC 0x31504848u
+
+#ifdef FACTORS_ISOLATE
+/* See avx2/test/collect_parallel.c for rationale.  accept-all pack probe. */
+static int32_t g_pack_reason, g_sz_h, g_sz_hbz1;
+#endif
 
 static void reconstruct_hint_response(polyvecl *out_z1, polyveck *out_z2,
                                       polyveck *out_w0, polyveck *out_w1,
@@ -215,9 +221,28 @@ reject:
     polyvecl_lowbits(&lb_z1, &z1rnd);
     polyvecl_highbits(&hb_z1, &z1rnd);
 
+#ifdef FACTORS_ISOLATE
+    {
+        uint8_t eh[N * K], ehb[N * L];
+        uint16_t s_hb = encode_hb_z1(ehb, &hb_z1.vec[0].coeffs[0]);
+        uint16_t s_h = encode_h(eh, &h.vec[0].coeffs[0]);
+        if (s_h == 0 || s_hb == 0)
+            g_pack_reason = 1;
+        else if (s_h < BASE_ENC_H || s_hb < BASE_ENC_HB_Z1 ||
+                 s_h > BASE_ENC_H + 255 || s_hb > BASE_ENC_HB_Z1 + 255)
+            g_pack_reason = 2;
+        else if (SEEDBYTES + L * N + 2 + s_hb + s_h > HAETAE_CRYPTO_BYTES)
+            g_pack_reason = 3;
+        else
+            g_pack_reason = 0;
+        g_sz_h = (int32_t)s_h;
+        g_sz_hbz1 = (int32_t)s_hb;
+    }
+#else
     if (pack_sig(sig, &c, &lb_z1, &hb_z1, &h)) {
         goto reject;
     }
+#endif
 
     *out_z1rnd = z1rnd;
     *out_z2rnd = z2rnd_out;
@@ -315,6 +340,11 @@ int main(int argc, char *argv[])
                 fwrite(pub_z2.vec[i].coeffs, sizeof(int32_t), N, fp);
             fwrite(c.coeffs, sizeof(int32_t), N, fp);
             fwrite(&bdiag, sizeof(int32_t), 1, fp);
+#ifdef FACTORS_ISOLATE
+            fwrite(&g_pack_reason, sizeof(int32_t), 1, fp);
+            fwrite(&g_sz_h, sizeof(int32_t), 1, fp);
+            fwrite(&g_sz_hbz1, sizeof(int32_t), 1, fp);
+#endif
 
             if ((t + 1) % 100000 == 0) {
                 double el = (double)(clock() - start) / CLOCKS_PER_SEC;

@@ -22,6 +22,21 @@ void decompose_z1(int32_t *highbits, int32_t *lowbits, const int32_t r) {
     lb = r & alpha_mask;
     center = ((alpha >> 1) - (lb + 1)) >> 31; // if lb >= HALF_ALPHA
     lb -= alpha & center;
+#ifdef SYM_DECOMPOSE_Z1
+    /* Symmetrization probe (factors isolation): the reference decompose_z1
+     * uses the half-open low-bits interval (-alpha/2, alpha/2] (values landing
+     * on the exact half r == alpha/2 (mod alpha) get lb = -alpha/2, hb rounded
+     * UP), which is sign-asymmetric under R: z->-z.  Route exact ties to EVEN
+     * highbits instead, making the split reflection-symmetric.  Reconstruction
+     * stays exact (hb*alpha + lb == r) since we recompute lb from the chosen hb. */
+    if (lb == -(alpha >> 1)) { // exact half (r == alpha/2 mod alpha)
+        int32_t hb = (r + (alpha >> 1)) >> log_alpha;
+        hb -= (hb & 1);        // ties to even
+        *highbits = hb;
+        *lowbits = r - (hb << log_alpha);
+        return;
+    }
+#endif
     *lowbits = lb;
     *highbits = (r + (alpha >> 1)) >> log_alpha;
 }

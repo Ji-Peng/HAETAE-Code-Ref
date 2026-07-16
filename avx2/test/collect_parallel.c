@@ -351,6 +351,17 @@ int main(int argc, char *argv[])
             memset(msg + sizeof(m), 0, sizeof(msg) - sizeof(m));
             sign_and_collect_hint(&z1rnd, &z2rnd, &pub_z1, &pub_z2, &c, &h,
                                   &w0, &w1, &raw, &bdiag, msg, sizeof(msg), pk, sk);
+#ifdef DEBUG_Z2CMP
+            /* Throwaway diagnostic: is the recorded pub_z2 (verifier reconstruction)
+             * bit-equal to the signer's z2rnd? If yes -> z2-both test is pointless;
+             * if it differs -> that difference IS the reconstruction discretization. */
+            { static long tot=0, diff=0, maxad=0; long i,j,ad;
+              for(i=0;i<K;i++) for(j=0;j<N;j++){ tot++;
+                ad = (long)z2rnd.vec[i].coeffs[j] - (long)pub_z2.vec[i].coeffs[j];
+                if(ad){ diff++; if(ad<0)ad=-ad; if(ad>maxad)maxad=ad; } }
+              if((t+1)%2000==0) fprintf(stderr,"[z2cmp] tot=%ld diff=%ld (%.4f%%) maxabsdiff=%ld\n",
+                                        tot,diff,100.0*diff/tot,maxad); }
+#endif
             for (unsigned int i = 0; i < L; i++)
                 fwrite(z1rnd.vec[i].coeffs, sizeof(int32_t), N, fp);
             for (unsigned int i = 0; i < K; i++)

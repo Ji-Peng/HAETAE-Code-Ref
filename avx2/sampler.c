@@ -4,6 +4,9 @@
 
 #include "fixpoint.h"
 #include "symmetric.h"
+#ifdef SIGMA14
+#    include "sigma14_common.h"  // CDT14, EXP14, CDTLEN14, SIGMA14 geometry (single source)
+#endif
 
 /*************************************************
  * Name:        rej_uniform
@@ -132,6 +135,7 @@ unsigned int rej_eta(int32_t *a, unsigned int len, const uint8_t *buf,
     return ctr;
 }
 
+#ifndef SIGMA14
 static uint64_t approx_exp(const uint64_t x)
 {
     int64_t result;
@@ -149,8 +153,22 @@ static uint64_t approx_exp(const uint64_t x)
     result = ((smulh48(result, x))) + 0x0000FFFFFFFFFFFCLL;
     return result;
 }
+#else
+// SIGMA14: exp(-u)*2^48 on u in [0, ~0.875] (N_th_max=0.869 at x=222).
+// Degree-15 uniform smulh48 Horner; coeffs EXP14[k]=round((-1)^k 2^48/k!)
+// from sigma14_common.h.  Byte-identical to clean/sampler.c approx_exp14.
+static uint64_t approx_exp14(const uint64_t exp_in)
+{
+    int64_t result = EXP14[EXP14_DEG];
+    for (int k = EXP14_DEG - 1; k >= 0; k--) {
+        result = smulh48(result, exp_in) + EXP14[k];
+    }
+    return (uint64_t)result;
+}
+#endif
 
-#define CDTLEN 64
+#ifndef SIGMA14
+#    define CDTLEN 64
 static const uint32_t CDT[CDTLEN] = {
     3266,  6520,  9748,  12938, 16079, 19159, 22168, 25096, 27934, 30674,
     33309, 35833, 38241, 40531, 42698, 44742, 46663, 48460, 50135, 51690,
@@ -169,19 +187,47 @@ static uint64_t sample_gauss16(const uint64_t rand16)
     }
     return r;
 }
+#else
+// SIGMA14: 144-bit CDT (223 entries) -> base integer x in [0,222] (~13.94
+// sigma).  x = #{ i : CDT14[i] < rand144 }, 3-limb lexicographic
+// STRICT-less compare (hi>mid>lo), matching the stock strict-less tie
+// convention.  Each limb < 2^48 so (c-r)>>63 is the borrow. Byte-identical
+// to clean/sampler.c.
+static uint64_t gauss144(uint64_t rlo, uint64_t rmid, uint64_t rhi)
+{
+    unsigned int i;
+    uint64_t r = 0;
+    for (i = 0; i < CDTLEN14; i++) {
+        uint64_t clo = CDT14[i][0], cmid = CDT14[i][1], chi = CDT14[i][2];
+        uint64_t lt_hi = ((chi - rhi) >> 63) & 1;  // chi  < rhi
+        uint64_t eq_hi = (chi == rhi);
+        uint64_t lt_md = ((cmid - rmid) >> 63) & 1;  // cmid < rmid
+        uint64_t eq_md = (cmid == rmid);
+        uint64_t lt_lo = ((clo - rlo) >> 63) & 1;  // clo  < rlo
+        r += lt_hi | (eq_hi & (lt_md | (eq_md & lt_lo)));
+    }
+    return r;  // x in [0, 222]
+}
+#endif
 
-#define GAUSS_RAND (72 + 16 + 48)
+#ifndef SIGMA14
+#    define GAUSS_RAND (72 + 16 + 48)
+#else
+#    define GAUSS_RAND GAUSS_RAND_SIGMA14  // 72 + 144 + 48 = 264
+#endif
 #define GAUSS_RAND_BYTES ((GAUSS_RAND + 7) / 8)
 static int sample_gauss_sigma76(uint64_t *r, fp96_76 *sqr,
                                 const uint8_t rand[GAUSS_RAND_BYTES])
 {
+    uint64_t x, exp_in;
+    fp96_76 y;
+
+#ifndef SIGMA14
     const uint64_t rand_gauss16 = rand[0] | (((uint64_t)rand[1]) << 8);
     const uint64_t rand_rej =
         rand[2] | (((uint64_t)rand[3]) << 8) |
         (((uint64_t)rand[4]) << 16) | (((uint64_t)rand[5]) << 24) |
         (((uint64_t)rand[6]) << 32) | (((uint64_t)rand[7]) << 40);
-    uint64_t x, exp_in;
-    fp96_76 y;
 
     /*
      * 1) sample x from small discrete gaussian via CDT (16-bit randomness)
@@ -189,110 +235,87 @@ static int sample_gauss_sigma76(uint64_t *r, fp96_76 *sqr,
      */
     x = sample_gauss16(rand_gauss16);
 
-#ifdef TRUNC_CAP_X
-    /* FACTORS EXPERIMENT ONLY: exaggerated tail truncation.  x in [0..64] maps to
-     * ~x/16 sigma; reject candidates with x > TRUNC_CAP_X to cap the tail (e.g.
-     * TRUNC_CAP_X=32 -> ~2 sigma).  Guarded so the baseline build is unchanged. */
-    if (x > (uint64_t)TRUNC_CAP_X) return 0;
-#endif
+#    ifdef TRUNC_CAP_X
+    /* FACTORS EXPERIMENT ONLY: exaggerated tail truncation.  x in [0..64]
+     * maps to ~x/16 sigma; reject candidates with x > TRUNC_CAP_X to cap
+     * the tail (e.g. TRUNC_CAP_X=32 -> ~2 sigma).  Guarded so the baseline
+     * build is unchanged. */
+    if (x > (uint64_t)TRUNC_CAP_X)
+        return 0;
+#    endif
 
     /*
-     * 2) Build a 79-bit candidate y = yrand + (x << 72)
-     *
-     * Layout (little-endian limbs):
+     * 2) Build a 79-bit candidate y = yrand + (x << 72).
      *  - limb48[0] stores the low 48 bits of "yrand" (rand[8..13]).
-     *  - limb48[1] stores: low 24 bits of upper randomness (rand[14..16])
-     *    and then x in the high bits (x << 24). Thus limb48[1] effectively
-     *    has ~31 useful bits (24 from random + ~7 from x).
-     *
-     * Combined effective bitlength: 48 + 31 = 79 bits.
-     *
-     * In the (p,e)-notation used in Appendix G, this fp96_76 value is
-     * interpreted with an implicit scale of 2^{-76}, i.e. the true real
-     * sample is y * 2^{-76}. The implementation stores the integer
-     * representation across two 48-bit limbs (total ~96 bits) to keep headroom
-     * for intermediate multiplications.
+     *  - limb48[1] stores 24 bits of upper randomness (rand[14..16]) and
+     * x.
      */
     y.limb48[0] = rand[8] | ((uint64_t)rand[9] << 8) |
                   ((uint64_t)rand[10] << 16) | ((uint64_t)rand[11] << 24) |
                   ((uint64_t)rand[12] << 32) | ((uint64_t)rand[13] << 40);
-
-    /*
-     * place upper randomness and the small CDT sample x in limb48[1]
-     * y = x * 2^{72} + yrand (with yrand < 2^{72}).
-     */
     y.limb48[1] = rand[14] | ((uint64_t)rand[15] << 8) |
                   ((uint64_t)rand[16] << 16) | (x << 24);
+#else
+    // SIGMA14 layout: CDT144(rand[0..17]) | rej48(rand[18..23]) |
+    // ylow72(rand[24..32]).
+    const uint64_t rlo =
+        rand[0] | ((uint64_t)rand[1] << 8) | ((uint64_t)rand[2] << 16) |
+        ((uint64_t)rand[3] << 24) | ((uint64_t)rand[4] << 32) |
+        ((uint64_t)rand[5] << 40);
+    const uint64_t rmid =
+        rand[6] | ((uint64_t)rand[7] << 8) | ((uint64_t)rand[8] << 16) |
+        ((uint64_t)rand[9] << 24) | ((uint64_t)rand[10] << 32) |
+        ((uint64_t)rand[11] << 40);
+    const uint64_t rhi =
+        rand[12] | ((uint64_t)rand[13] << 8) | ((uint64_t)rand[14] << 16) |
+        ((uint64_t)rand[15] << 24) | ((uint64_t)rand[16] << 32) |
+        ((uint64_t)rand[17] << 40);
+    const uint64_t rand_rej =
+        rand[18] | ((uint64_t)rand[19] << 8) | ((uint64_t)rand[20] << 16) |
+        ((uint64_t)rand[21] << 24) | ((uint64_t)rand[22] << 32) |
+        ((uint64_t)rand[23] << 40);
 
-    /*
-     * 3) Compute rounded r := round(y / 2^{15}). The code drops 15
-     *    low bits of y and keeps the next 64 bits as the candidate sample r.
-     *    This matches the analysis: r is a 64-bit integer representing the
-     *    high part of y after removing fractional/low entropy bits.
-     */
+    // sample x from the 144-bit CDT (x in [0,222], ~13.94 sigma coverage)
+    x = gauss144(rlo, rmid, rhi);
+
+    // y := append x to y (x<<24 leaves bits 32..47 of limb48[1] for square
+    // carries)
+    y.limb48[0] = rand[24] | ((uint64_t)rand[25] << 8) |
+                  ((uint64_t)rand[26] << 16) | ((uint64_t)rand[27] << 24) |
+                  ((uint64_t)rand[28] << 32) | ((uint64_t)rand[29] << 40);
+    y.limb48[1] = rand[30] | ((uint64_t)rand[31] << 8) |
+                  ((uint64_t)rand[32] << 16) | (x << 24);
+#endif
+
+    // r := round y
     *r = (y.limb48[0] >> 15) ^ (y.limb48[1] << 33);
     *r += 1; /* rounding */
     *r >>= 1;
 
-    /*
-     * 4) Compute sqr := y^2 >> 76 using high-precision fixed-point square.
-     *    After fixpoint_square, sqr->limb48[1] contains the upper bits and
-     *    sqr->limb48[0] contains the lower 48 bits of (y^2 >> 76).  In the
-     *    (p,e)-formalism this corresponds to computing the squared value in
-     *    a (p,13)-like domain (squared magnitudes require more exponent
-     *    headroom).
-     */
+    // sqr := y*y  (sqr[1] = y^2 >> 124, sqr[0] = (y^2 >> 76) & (2^48-1))
     fixpoint_square(sqr, &y);
 
-    /*
-     * 5) Prepare input to the exponential-based rejection test:
-     *    The intended exponent argument is approx
-     *      (y^2 - x^2 * 2^144) / 2^153
-     *    (see paper / comments). Since fixpoint_square already produced
-     *    (y^2 >> 76) split in limbs, we subtract x^2 * 2^68 (== x^2*2^144>>76)
-     *    to form the numerator, then shift and pack to obtain exp_in.
-     *
-     *    The resulting exp_in is scaled and fits comfortably in 64 bits.
-     */
+    // exp_in := (sqr - ((x*x) << 68)) scaled by 2^48 (see clean/sampler.c)
     exp_in = sqr->limb48[1] - ((x * x) << (68 - 48));
-    /* drop low bits and align: target roughly (...) / 2^48 */
     exp_in <<= 20;
     exp_in |= sqr->limb48[0] >> 28;
     exp_in += 1; /* rounding */
     exp_in >>= 1;
 
-    /*
-     * exp_in range sanity (comments from original):
-     *  - min: x=0, yrand=0 => exp_in == 0
-     *  - max: x ~ 64, yrand ~ 2^72-1 => exp_in well below 2^25 in practice
-     */
-
-    /*
-     * 6) Rejection decision: sample is accepted with probability approx_exp(exp_in).
-     *    The original return expression packed multiple bit-tricks into a
-     *    single line. We expand it into clear boolean steps below, keeping
-     *    the exact semantics.
-     */
-    /* clear lowest bit of rand_rej to reserve it for the "zero-sample" coin */
-    uint64_t rand_rej_zero = rand_rej & ~1ULL; /* set LSB to zero */
-
-    /* approx_exp returns a fixed-point scaled probability; compare as signed */
-    uint64_t approx_val = approx_exp(exp_in);
-
-    /* accept if rand_rej_zero < approx_val (i.e., random draw is less than prob) */
-    int accept_by_rejection = ((int64_t)rand_rej_zero < (int64_t)approx_val) ? 1 : 0;
-
-    /*
-     * If the candidate sample r is zero, we still want to clear half of
-     * those zero samples probabilistically (to avoid bias on exact-zero
-     * pathological case). The reserved LSB of rand_rej implements that
-     * "clear with prob 1/2 when r==0" rule: if both r==0 and rand_rej==0,
-     * then nonzero_flag==0 and the sample is rejected.
-     */
-    int nonzero_flag = ((*r != 0) || (rand_rej != 0)) ? 1 : 0;
-
-    /* final accepted bit: accepted by rejection AND not (zero-cleared) */
-    return (accept_by_rejection & nonzero_flag) & 1;
+    // accept with prob approx_exp(exp_in); clear return value w.p. 1/2 if
+    // r==0.
+    return ((((int64_t)(rand_rej ^
+                        (rand_rej & 1))  // clear LSB (zero-sample coin)
+              - (int64_t)
+#ifdef SIGMA14
+                    approx_exp14(exp_in)
+#else
+                    approx_exp(exp_in)
+#endif
+                  ) >>
+             63) &
+            (((*r | -*r) >> 63) | rand_rej)) &
+           1;
 }
 
 int sample_gauss(uint64_t *r, fp96_76 *sqsum, const uint8_t *buf,

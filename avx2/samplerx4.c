@@ -7,16 +7,25 @@
 #include "keccakx4_vec.h"
 #include "sampler.h"
 #include "symmetric.h"
+#ifdef SIGMA14
+#    include "sigma14_common.h"  // CDT14, EXP14, CDTLEN14, SIGMA14 geometry (single source)
+#endif
 
-#define GAUSS_RAND (72 + 16 + 48)
-#define GAUSS_RAND_BYTES ((GAUSS_RAND + 7) / 8)
+#ifndef SIGMA14
+#    define GAUSS_RAND (72 + 16 + 48)
+#    define GAUSS_RAND_BYTES ((GAUSS_RAND + 7) / 8)
+#else
+#    define GAUSS_RAND GAUSS_RAND_SIGMA14  // 72 + 144 + 48 = 264
+#    define GAUSS_RAND_BYTES GAUSS_RAND_BYTES_SIGMA14  // 33
+#endif
 #define NUM_GAUSSIANS 278  // ca 80% require up to 272 Gaussian samples
 #define POLY_HYPERBALL_BUFLEN_4X (GAUSS_RAND_BYTES * NUM_GAUSSIANS + N / 8)
 #define POLY_HYPERBALL_NBLOCKS_4X                            \
     ((POLY_HYPERBALL_BUFLEN_4X + STREAM256_BLOCKBYTES - 1) / \
      STREAM256_BLOCKBYTES)
 
-#define CDTLEN 64
+#ifndef SIGMA14
+#    define CDTLEN 64
 static const union {
     __m256i vec[(CDTLEN + 7) / 8 * 4];
     uint32_t arr[CDTLEN * 4];
@@ -50,12 +59,14 @@ static const union {
             65523, 65527, 65523, 65527, 65523, 65527, 65529, 65531, 65529,
             65531, 65529, 65531, 65529, 65531, 65533, 65534, 65533, 65534,
             65533, 65534, 65533, 65534}};
+#endif  // !SIGMA14
 
 static const union {
     __m256i vec;
     uint32_t arr[8];
 } zero_avx = {.arr = {0}};
 
+#ifndef SIGMA14
 static const union {
     __m256i vec[2];
     uint16_t arr[32];
@@ -63,6 +74,7 @@ static const union {
                       0xffff, 0, 0,      0, 0xffff, 0, 0,      0,
                       0,      0, 0xffff, 0, 0,      0, 0xffff, 0,
                       0,      0, 0xffff, 0, 0,      0, 0xffff, 0}};
+#endif
 
 static const union {
     __m256i vec[3];
@@ -79,6 +91,7 @@ static const union {
 } consts_avx = {.arr = {1 << 14, 1 << 14, 1 << 14, 1 << 14, 1 << 11,
                         1 << 11, 1 << 11, 1 << 11, 1, 1, 1, 1}};
 
+#ifndef SIGMA14
 // static void preprocessing_x4(sample_candidates.vec, sqr.vec,
 // rejection.vec, &outbuf.vec[4]); // first four vectors are just signs
 static void preprocessing_x4(__m256i *sc, __m256i *sqr, __m256i *rej,
@@ -249,7 +262,101 @@ static void preprocessing_x4(__m256i *sc, __m256i *sqr, __m256i *rej,
         _mm256_store_si256(&sqr[2 * i + 1], reg[6]);
     }
 }
+#else   // SIGMA14 preprocessing (33-byte records) + 144-bit CDT compare
 
+// Extract a field of `width_bits` bits starting at bit offset `s` within
+// the little-endian concatenation of the vector window `w`.  All four
+// 64-bit lanes use the same field position.  Variable shifts
+// (VPSRLQ/VPSLLQ) define a shift count >= 64 as 0, so the b==0 case (count
+// 64) cleanly contributes nothing.
+static inline __m256i sig14_extract(const __m256i *w, int s,
+                                    int width_bits)
+{
+    int vi = s >> 6;
+    int b = s & 63;
+    __m128i cb = _mm_cvtsi32_si128(b);
+    __m128i cb2 = _mm_cvtsi32_si128(64 - b);
+    __m256i lo = _mm256_srl_epi64(w[vi], cb);
+    __m256i hi =
+        _mm256_sll_epi64(w[vi + 1], cb2);  // b==0 -> shift 64 -> 0
+    __m256i f = _mm256_or_si256(lo, hi);
+    __m256i m = _mm256_set1_epi64x(
+        (width_bits >= 64) ? -1 : ((1LL << width_bits) - 1));
+    return _mm256_and_si256(f, m);
+}
+
+// SIGMA14 repack of the de-interleaved SHAKE output into per-gaussian
+// fields. Record layout (33 bytes): CDT144(0..17) | rej48(18..23) |
+// ylow72(24..32), split rlo=0..5, rmid=6..11, rhi=12..17, rej=18..23,
+// ylow_lo=24..29, ylow_hi=30..32.  Emits three 48-bit CDT limbs into
+// cdt[3i+{0,1,2}], the 48-bit rejection value into rej[i], and the 72-bit
+// ylow into sqr[2i]/sqr[2i+1] (48-bit low, 24-bit high), matching the
+// scalar SIGMA14 layout.
+static void preprocessing_x4(__m256i *sqr, __m256i *rej, __m256i *cdt,
+                             const __m256i *buf)
+{
+    for (size_t i = 0; i < NUM_GAUSSIANS; i++) {
+        size_t j =
+            (33 * i) >> 3;  // starting vector of this record's window
+        int base = (int)(i & 7) * 8;  // record start bit within the window
+        __m256i w[6];
+        w[0] = _mm256_load_si256(&buf[j + 0]);
+        w[1] = _mm256_load_si256(&buf[j + 1]);
+        w[2] = _mm256_load_si256(&buf[j + 2]);
+        w[3] = _mm256_load_si256(&buf[j + 3]);
+        w[4] = _mm256_load_si256(&buf[j + 4]);
+        w[5] = _mm256_load_si256(&buf[j + 5]);
+
+        _mm256_store_si256(&cdt[3 * i + 0],
+                           sig14_extract(w, base + 0, 48));
+        _mm256_store_si256(&cdt[3 * i + 1],
+                           sig14_extract(w, base + 48, 48));
+        _mm256_store_si256(&cdt[3 * i + 2],
+                           sig14_extract(w, base + 96, 48));
+        _mm256_store_si256(&rej[i], sig14_extract(w, base + 144, 48));
+        _mm256_store_si256(&sqr[2 * i + 0],
+                           sig14_extract(w, base + 192, 48));
+        _mm256_store_si256(&sqr[2 * i + 1],
+                           sig14_extract(w, base + 240, 24));
+    }
+}
+
+// 4-lane 144-bit CDT sampler: x = #{ i : CDT14[i] < rand144 } per lane, a
+// 3x48-bit lexicographic STRICT-less compare (hi>mid>lo).  Both operands
+// are < 2^48 (limbs masked in preprocessing, CDT14 entries are 48-bit), so
+// the signed _mm256_cmpgt_epi64 coincides with the unsigned compare.
+// Result x in [0,222] written per 64-bit lane, high bits zero.
+// Byte-matches scalar gauss144.
+static void gauss144_x4(__m256i *sc, const __m256i *cdt)
+{
+    const __m256i one = _mm256_set1_epi64x(1);
+    for (size_t i = 0; i < NUM_GAUSSIANS; i++) {
+        __m256i rlo = _mm256_load_si256(&cdt[3 * i + 0]);
+        __m256i rmid = _mm256_load_si256(&cdt[3 * i + 1]);
+        __m256i rhi = _mm256_load_si256(&cdt[3 * i + 2]);
+        __m256i acc = _mm256_setzero_si256();
+        for (unsigned k = 0; k < CDTLEN14; k++) {
+            __m256i clo = _mm256_set1_epi64x((int64_t)CDT14[k][0]);
+            __m256i cmid = _mm256_set1_epi64x((int64_t)CDT14[k][1]);
+            __m256i chi = _mm256_set1_epi64x((int64_t)CDT14[k][2]);
+            __m256i lt_hi = _mm256_cmpgt_epi64(rhi, chi);  // chi  < rhi
+            __m256i eq_hi = _mm256_cmpeq_epi64(chi, rhi);
+            __m256i lt_md = _mm256_cmpgt_epi64(rmid, cmid);  // cmid < rmid
+            __m256i eq_md = _mm256_cmpeq_epi64(cmid, rmid);
+            __m256i lt_lo = _mm256_cmpgt_epi64(rlo, clo);  // clo  < rlo
+            // is_lt = lt_hi | (eq_hi & (lt_md | (eq_md & lt_lo)))
+            __m256i t = _mm256_and_si256(eq_md, lt_lo);
+            t = _mm256_or_si256(lt_md, t);
+            t = _mm256_and_si256(eq_hi, t);
+            __m256i is_lt = _mm256_or_si256(lt_hi, t);
+            acc = _mm256_add_epi64(acc, _mm256_and_si256(is_lt, one));
+        }
+        _mm256_store_si256(&sc[i], acc);
+    }
+}
+#endif  // SIGMA14
+
+#ifndef SIGMA14
 // samples 4x NUM_GAUSSIANS derivates from the CDT distribution
 static void sample_gauss16_x4(__m256i *r)
 {
@@ -336,6 +443,7 @@ static void sample_gauss16_x4(__m256i *r)
         _mm256_store_si256(&r[i], reg[13]);
     }
 }
+#endif  // !SIGMA14
 
 static void sample_candidates_x4(__m256i *sc, __m256i *sqr, __m256i *rej)
 {
@@ -501,6 +609,7 @@ static inline void smulh48_avx(__m256i *a, const __m256i *b, __m256i *ah,
     *a = _mm256_add_epi64(*a, *tmp);
 }
 
+#ifndef SIGMA14
 static const union {
     __m256i vec[9];
     int64_t arr[9 * 4];
@@ -612,6 +721,32 @@ static void approx_exp_4x(__m256i *rej)
         _mm256_store_si256(&rej[i], reg[0]);
     }
 }
+#else  // SIGMA14: degree-15 uniform smulh48 Horner over EXP14 (no per-term
+       // shift)
+// approx_exp14_4x: reg[4]=exp_in (b in [0,2^48)); reg[0]=accumulator. Uses
+// the same smulh48_avx (bit-matches scalar smulh48) and the shared EXP14[]
+// table, broadcast per term, so it stays byte-identical to scalar
+// approx_exp14.
+static void approx_exp_4x(__m256i *rej)
+{
+    __m256i reg[16];
+    size_t i;
+    __m256i mask24 = _mm256_set1_epi64x((1LL << 24) - 1);
+    __m256i one23 = _mm256_set1_epi64x(1LL << 23);
+
+    for (i = 0; i < NUM_GAUSSIANS; i++) {
+        reg[4] = _mm256_load_si256(&rej[i]);            // exp_in
+        reg[0] = _mm256_set1_epi64x(EXP14[EXP14_DEG]);  // A[15]
+        for (int k = EXP14_DEG - 1; k >= 0; k--) {
+            smulh48_avx(&reg[0], &reg[4], &reg[5], &reg[6], &reg[7],
+                        &reg[8], &reg[9], &reg[10], &mask24, &one23);
+            reg[0] =
+                _mm256_add_epi64(reg[0], _mm256_set1_epi64x(EXP14[k]));
+        }
+        _mm256_store_si256(&rej[i], reg[0]);
+    }
+}
+#endif  // SIGMA14
 
 static const union {
     __m256i vec;
@@ -795,6 +930,10 @@ void sample_gauss_N_4x(uint64_t *r0, uint64_t *r1, uint64_t *r2,
     ALIGNED_INT64(NUM_GAUSSIANS * 4) exp;
     ALIGNED_INT64(NUM_GAUSSIANS * 4) rejection;
     ALIGNED_INT64(NUM_GAUSSIANS * 8) sqr;
+#ifdef SIGMA14
+    ALIGNED_INT64(NUM_GAUSSIANS * 12)
+    cdt;  // 3 x 48-bit CDT limbs per lane
+#endif
 #ifndef HAETAE_USE_AES
     keccakx4_state state;
 #else
@@ -852,13 +991,23 @@ void sample_gauss_N_4x(uint64_t *r0, uint64_t *r1, uint64_t *r2,
         signs3[i] = outbuf.coeffs[(i % 8) + (i / 8) * 32 + 24];
     }
 
-    // step 0: write CDT randomness into sample_candidates, 72 bit
-    // randomness into sqr, and rejection randomness into rejection
+    // step 0: write CDT randomness, 72 bit randomness into sqr, and
+    // rejection randomness into rejection
+#ifdef SIGMA14
+    // SIGMA14: emit three 48-bit CDT limbs per lane into cdt, then 144-bit
+    // CDT
+    preprocessing_x4(sqr.vec, rejection.vec, cdt.vec,
+                     &outbuf.vec[4]);  // first four vectors are just signs
+
+    // step 1: sample from the 144-bit CDT distribution, store all results
+    gauss144_x4(sample_candidates.vec, cdt.vec);
+#else
     preprocessing_x4(sample_candidates.vec, sqr.vec, rejection.vec,
                      &outbuf.vec[4]);  // first four vectors are just signs
 
     // step 1: sample from CDT distribution, store all results
     sample_gauss16_x4(sample_candidates.vec);
+#endif
 
     // step 2: construct the sample candidates, compute sqr and input to
     // exp approximation

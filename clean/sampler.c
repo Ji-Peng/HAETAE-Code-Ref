@@ -2,6 +2,9 @@
 #include "fixpoint.h"
 #include "symmetric.h"
 #include <stdint.h>
+#ifdef SIGMA14
+#include "sigma14_common.h"   // CDT14, EXP14, CDTLEN14, SIGMA14 geometry (single source)
+#endif
 
 /*************************************************
  * Name:        rej_uniform
@@ -125,6 +128,7 @@ unsigned int rej_eta(int32_t *a, unsigned int len, const uint8_t *buf,
     return ctr;
 }
 
+#ifndef SIGMA14
 static uint64_t approx_exp(const uint64_t x) {
     int64_t result;
     result = -0x0000B6C6340925AELL;
@@ -137,7 +141,20 @@ static uint64_t approx_exp(const uint64_t x) {
     result = ((smulh48(result, x))) + 0x0000FFFFFFFFFFFCLL;
     return result;
 }
+#else
+// SIGMA14: exp(-u)*2^48 valid on u in [0, ~0.875] (N_th_max=0.869 at x=222).
+// Degree-15 uniform smulh48 Horner; coeffs EXP14[k]=round((-1)^k 2^48/k!) from sigma14_common.h.
+// Max abs err 3 ulp = 2^-46.6 (matches stock). approx_exp14(0)=2^48 exactly.
+static uint64_t approx_exp14(const uint64_t exp_in) {
+    int64_t result = EXP14[EXP14_DEG];
+    for (int k = EXP14_DEG - 1; k >= 0; k--) {
+        result = smulh48(result, exp_in) + EXP14[k];
+    }
+    return (uint64_t)result;
+}
+#endif
 
+#ifndef SIGMA14
 #define CDTLEN 64
 static const uint32_t CDT[CDTLEN] = {
  3266,  6520,  9748, 12938, 16079, 19159, 22168, 25096,
@@ -159,8 +176,31 @@ static uint64_t sample_gauss16(const uint64_t rand16) {
     }
     return r;
 }
+#else
+// SIGMA14: 144-bit CDT (223 entries) -> base integer x in [0,222] (~13.94 sigma coverage).
+// x = #{ i : CDT14[i] < rand144 }, 3-limb lexicographic STRICT-less compare (hi>mid>lo),
+// matching the stock strict-less tie convention. Each limb < 2^48 so (c-r)>>63 is the borrow.
+static uint64_t gauss144(uint64_t rlo, uint64_t rmid, uint64_t rhi) {
+    unsigned int i;
+    uint64_t r = 0;
+    for (i = 0; i < CDTLEN14; i++) {
+        uint64_t clo = CDT14[i][0], cmid = CDT14[i][1], chi = CDT14[i][2];
+        uint64_t lt_hi = ((chi  - rhi ) >> 63) & 1;   // chi  < rhi
+        uint64_t eq_hi = (chi  == rhi);
+        uint64_t lt_md = ((cmid - rmid) >> 63) & 1;   // cmid < rmid
+        uint64_t eq_md = (cmid == rmid);
+        uint64_t lt_lo = ((clo  - rlo ) >> 63) & 1;   // clo  < rlo
+        r += lt_hi | (eq_hi & (lt_md | (eq_md & lt_lo)));
+    }
+    return r;  // x in [0, 222]
+}
+#endif
 
+#ifndef SIGMA14
 #define GAUSS_RAND (72 + 16 + 48)
+#else
+#define GAUSS_RAND GAUSS_RAND_SIGMA14        // 72 + 144 + 48 = 264
+#endif
 #define GAUSS_RAND_BYTES ((GAUSS_RAND + 7) / 8)
 static int sample_gauss_sigma76(uint64_t *r, fp96_76 *sqr,
                                 const uint8_t rand[GAUSS_RAND_BYTES]) {
@@ -225,11 +265,12 @@ static int sample_gauss_sigma76(uint64_t *r, fp96_76 *sqr,
      * - The bit shifts/limb packing are exactly responsible for the power-of-two
      *   hidden factor 2^48 between mathematical and code representations.
      */
-    const uint64_t rand_gauss16 = rand[0] | (((uint64_t) rand[1]) << 8); 
-    const uint64_t rand_rej = rand[2] | (((uint64_t) rand[3]) << 8) | (((uint64_t) rand[4]) << 16) | (((uint64_t) rand[5]) << 24)
-     | (((uint64_t) rand[6]) << 32) | (((uint64_t) rand[7]) << 40);
     uint64_t x, exp_in;
     fp96_76 y;
+#ifndef SIGMA14
+    const uint64_t rand_gauss16 = rand[0] | (((uint64_t) rand[1]) << 8);
+    const uint64_t rand_rej = rand[2] | (((uint64_t) rand[3]) << 8) | (((uint64_t) rand[4]) << 16) | (((uint64_t) rand[5]) << 24)
+     | (((uint64_t) rand[6]) << 32) | (((uint64_t) rand[7]) << 40);
 
     // sample x
     x = sample_gauss16(rand_gauss16);
@@ -242,6 +283,27 @@ static int sample_gauss_sigma76(uint64_t *r, fp96_76 *sqr,
     y.limb48[1] =
         rand[14] | ((uint64_t)rand[15] << 8) | ((uint64_t)rand[16] << 16) |
         (x << 24);
+#else
+    // SIGMA14 layout: CDT144(rand[0..17]) | rej48(rand[18..23]) | ylow72(rand[24..32]).
+    const uint64_t rlo  = rand[0]  | ((uint64_t)rand[1]  << 8) | ((uint64_t)rand[2]  << 16) |
+                          ((uint64_t)rand[3]  << 24) | ((uint64_t)rand[4]  << 32) | ((uint64_t)rand[5]  << 40);
+    const uint64_t rmid = rand[6]  | ((uint64_t)rand[7]  << 8) | ((uint64_t)rand[8]  << 16) |
+                          ((uint64_t)rand[9]  << 24) | ((uint64_t)rand[10] << 32) | ((uint64_t)rand[11] << 40);
+    const uint64_t rhi  = rand[12] | ((uint64_t)rand[13] << 8) | ((uint64_t)rand[14] << 16) |
+                          ((uint64_t)rand[15] << 24) | ((uint64_t)rand[16] << 32) | ((uint64_t)rand[17] << 40);
+    const uint64_t rand_rej = rand[18] | ((uint64_t)rand[19] << 8) | ((uint64_t)rand[20] << 16) |
+                          ((uint64_t)rand[21] << 24) | ((uint64_t)rand[22] << 32) | ((uint64_t)rand[23] << 40);
+
+    // sample x from the 144-bit CDT (x in [0,222], ~13.94 sigma coverage)
+    x = gauss144(rlo, rmid, rhi);
+
+    // y := append x to y (same form as stock; x<<24 leaves bits 32..47 for square carries)
+    y.limb48[0] = rand[24] | ((uint64_t)rand[25] << 8) | ((uint64_t)rand[26] << 16) |
+                  ((uint64_t)rand[27] << 24) | ((uint64_t)rand[28] << 32) | ((uint64_t)rand[29] << 40);
+    y.limb48[1] =
+        rand[30] | ((uint64_t)rand[31] << 8) | ((uint64_t)rand[32] << 16) |
+        (x << 24);
+#endif
 
     // r := round y 
     *r = (y.limb48[0] >> 15) ^ (y.limb48[1] << 33);
@@ -263,7 +325,13 @@ static int sample_gauss_sigma76(uint64_t *r, fp96_76 *sqr,
     return ((((int64_t)(rand_rej ^
                         (rand_rej & 1)) // set lowest bit to zero in order to
                                         // use it for rejection if sample==0
-              - (int64_t)approx_exp(exp_in)) >>
+              - (int64_t)
+#ifdef SIGMA14
+                approx_exp14(exp_in)
+#else
+                approx_exp(exp_in)
+#endif
+                ) >>
              63) // reject with prob 1-approx_exp(exp_in)
             & (((*r | -*r) >> 63) | rand_rej)) &
            1; // if the sample is zero, clear the return value with prob 1/2
